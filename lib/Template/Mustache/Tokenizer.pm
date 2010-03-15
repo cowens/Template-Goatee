@@ -15,7 +15,7 @@ Version 20100313
 
 =cut
 
-our $VERSION = 20100313;
+our $VERSION = 20100315;
 
 =head1 SYNOPSIS
 
@@ -29,7 +29,15 @@ Turn a string that holds a Mustache template into tokens for a parser.
         or die "could not tokenize [$string]\n";
 
     while (defined(my $token = $tokenizer->next)) {
+        #replace unprintable characters with printable versions
+        $token =~ s/([\x{0}-\x{1f}\x{7f}])/sprintf "\\x{%x}", ord $1/ge;
         print "token: $token\n";
+    }
+
+    while (my ($token, $type) = $tokenizer->next) {
+        #replace unprintable characters with printable versions
+        $token =~ s/([\x{0}-\x{1f}\x{7f}])/sprintf "\\x{%x}", ord $1/ge;
+        print "token '$token' is of type $type\n";
     }
 
 =cut
@@ -208,6 +216,27 @@ tokenized.
 =head2 $tokenizer->unescaped 
 
 Returns a regex that matches an unescaped variable token (e.g. {{{var}}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->start 
+
+Returns the current starting delimiter (default "{{").
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->end 
+
+Returns the current ending delimiter (default "}}").
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->tokenizer 
+
+Returns the a regex that can be used to tokenize a string.
 
 Note: this regex cannot be cached as it changes while the document is being
 tokenized.
