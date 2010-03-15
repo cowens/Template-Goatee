@@ -32,57 +32,52 @@ Turn a string that holds a Mustache template into tokens for a parser.
         print "token: $token\n";
     }
 
-=head1 USEFUL VARIABLES
+=cut
 
-=head2 $Template::Mustache::Tokenizer::comment 
+BEGIN {
+	my @accessors = qw/
+		comment  partial   enum_start enum_stop
+		variable unescaped text       tokenizer
+		start    end
+	/;
+	{
+		no strict 'refs';
+		for my $accessor (@accessors) {
+			*{$accessor} = sub {
+				my $self = shift;
+				return $self->{"_$accessor"};
+			}
+		}
+	}
+}
 
-matches a comment token (e.g. {{! this is ignored }}
+#FIXME: This could use Perl 5.10's named captures to make parsing
+#eaiser.  Right now we have to use an innefficient helper function.
+#FIXME: This assumes that we have the full template, I need to work
+#on a streaming version.
+sub _gen_rules {
+	my $self          = shift;
+	my ($s, $e) = map { quotemeta } @{$self}{qw/ _start _end /};
 
-=head2 $Template::Mustache::Tokenizer::partial 
-
-matches a partial token (e.g. {{>template_to_load}})
-
-=head2 $Template::Mustache::Tokenizer::enum_start 
-
-matches the start of a  boolean or enumerable section (e.g. {{#optional_or_list}})
-
-=head2 $Template::Mustache::Tokenizer::enum_stop 
-
-matches the end of a boolean or enumerable section (e.g. {{/optional_or_list}})
-
-=head2 $Template::Mustache::Tokenizer::variable 
-
-matches a variable token (e.g. {{var}})
-
-=head2 $Template::Mustache::Tokenizer::unescaped 
-
-matches an unescaped variable token (e.g. {{{var}}})
-
-=cut;
-
-our $start_escaped = qr/ (?<! \{ ) \{{2} (?! \{ )/x; #not a {, two {s, not a {
-our $end_escaped   = qr/ (?<! } ) }{2} (?! } )   /x; #not a }, two }s, not a }
-our $start         = qr/ \{{3}                   /x; # three {s in a row
-our $end           = qr/ }{3}                    /x; # three }s in a row
-
-our $comment         = qr/ \G $start_escaped !   .*?    $end_escaped /x;
-our $partial         = qr/ \G $start_escaped >   .*?    $end_escaped /x;
-our $enum_start      = qr/ \G $start_escaped [#] .*?    $end_escaped /x;
-our $enum_stop       = qr{ \G $start_escaped /   .*?    $end_escaped }x;
-our $variable        = qr/ \G $start             [^{}]+ $end         /x;
-our $escaped         = qr/ \G $start_escaped     [^{}]+ $end_escaped /x;
-our $text            = qr/ \G [^{]+ /x;
-our $curly           = qr/ \G \{ (?! \{ ) /x;
-
-our $tokenizer = qr/
-	$comment   | $partial  | $enum_start |
-	$enum_stop | $variable | $escaped    |
-	$text      | $curly
-/x;
+	# N.B. order is very important
+	my $tokenizer = join "|", (
+		($self->{_comment}    = qr{ \G $s !         .+? $e    }xms),
+		($self->{_partial}    = qr{ \G $s >         .+? $e    }xms),
+		($self->{_enum_start} = qr{ \G $s \#        .+? $e    }xms),
+		($self->{_enum_stop}  = qr{ \G $s /         .+? $e    }xms),
+		($self->{_unescaped}  = ("$s $e" eq "\\{\\{ \\}\\}")       ?
+			                qr{ \G \{{3}        .+? \}{3} }xms :
+			                qr{ \G $s &         .+? $e    }xms
+		),
+		($self->{_variable}   = qr{ \G $s [^!>\#/&] .*? $e    }xms),
+		($self->{_text}       = qr{ \G .+? (?= $s | $ )       }xms)
+	);
+	$self->{_tokenizer}  = qr/$tokenizer/x;
+}
 
 =head1 METHODS
 
-=head2 new(STRING)
+=head2 Template::Mustache::Tokenizer->new(STRING)
 
 Creates a new Template::Mustache::Tokenizer oject that will tokenize the
 template stored in STRING
@@ -92,24 +87,183 @@ template stored in STRING
 sub new {
 	my $class = shift;
 	my $self  = {
-		_buf => shift,
+		_buf   => shift,
+		_start => "{{",
+		_end   => "}}",
 	};
-	return bless $self, $class;
+
+	bless $self, $class;
+
+	$self->_gen_rules;
+
+	return $self;
 }
 
-=head2 next()
+=head2 $tokenizer->next
 
-Returns the next token.  Returns undef when there are no more tokens left.
+In scalar context, it returns the next token.  If there are no more tokens then
+it returns undef;
+
+In list context, it returns the next token and the token's type.  If there are
+no more tokens then it returns an empty list.
 
 =cut
 
 sub next {
-	my $self = shift;
-	our $tokenizer;
-	return $1 if $self->{_buf} =~ /($tokenizer)/g;
-	return undef unless pos $self->{_buf};
-	croak "I don't undrestand what is going on around character ", 
-		(pos $self->{_buf}), "of the template\n";
+	my $self      = shift;
+	my $tokenizer = $self->tokenizer;
+
+	unless ($self->{_buf} =~ /($tokenizer)/g) {
+		return unless pos $self->{_buf};
+		croak "I don't undrestand what is going on around character ", 
+			(pos $self->{_buf}), "of the template";
+	}
+
+	my $token = $1;
+	my $type  = $self->type($token);
+	my ($s, $e) = map { quotemeta } @{$self}{qw/ _start _end /}; 
+
+	if ($token =~ /\A$s(.+?)= =(.+?)$e\z/) {
+		$self->{_start} = $1;
+		$self->{_end}   = $2;
+
+		croak "delimiters cannot contain whitespace"
+			if "$self->{_start}$self->{_end}" =~ /\s/;
+
+		$self->_gen_rules;
+		if ($self->{_debug}) {
+			warn "start is now $self->{_start} (was $s)\n",
+			"end   is now $self->{_end}   (was $e)\n";
+		}
+		return $self->next;
+	}
+
+	if (wantarray) {
+		return $token, $type if defined $token;
+	} else {
+		return $token if defined $token;
+	}
 }
 
-1;
+=head2 $tokenizer->type(TOKEN)
+
+Returns a string that identifies the type of the token TOKEN.
+
+Returns undef if TOKEN is not a token.
+
+=cut
+
+sub type {
+	my $self  = shift;
+	my $token = shift;
+
+	# N.B. order is very important
+	return "comment"            if $token =~ /\A$self->{_comment}\z/;
+	return "partial"            if $token =~ /\A$self->{_partial}\z/;
+	return "enum start"         if $token =~ /\A$self->{_enum_start}\z/;
+	return "enum stop"          if $token =~ /\A$self->{_enum_stop}\z/;
+	return "unescaped variable" if $token =~ /\A$self->{_unescaped}\z/;
+	return "variable"           if $token =~ /\A$self->{_variable}\z/;
+	return "text"               if $token =~ /\A$self->{_text}\z/;
+	return undef;
+}
+
+=head2 $tokenizer->comment 
+
+Returns a regex that matches a comment token (e.g. {{! this is ignored }}.
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->partial 
+
+Returns a regex that matches a partial token (e.g. {{>template_to_load}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->enum_start 
+
+Returns a regex that matches the start of a  boolean or enumerable section
+(e.g. {{#optional_or_list}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->enum_stop 
+
+Returns a regex that matches the end of a boolean or enumerable section (e.g.
+{{/optional_or_list}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->variable 
+
+Returns a regex that matches a variable token (e.g. {{var}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head2 $tokenizer->unescaped 
+
+Returns a regex that matches an unescaped variable token (e.g. {{{var}}}).
+
+Note: this regex cannot be cached as it changes while the document is being
+tokenized.
+
+=head1 AUTHOR
+
+Chas. J. Owens IV, C<< <chas.owens at gmail.com> >>
+
+=head1 BUGS
+
+Please report any bugs or feature requests to C<bug-template-mustache at rt.cpan.org>, or through
+the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Template-Mustache>.  I will be notified, and then you'll
+automatically be notified of progress on your bug as I make changes.
+
+=head1 SUPPORT
+
+You can find documentation for this module with the perldoc command.
+
+    perldoc Template::Mustache
+
+
+You can also look for information at:
+
+=over 4
+
+=item * RT: CPAN's request tracker
+
+L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=Template-Mustache>
+
+=item * AnnoCPAN: Annotated CPAN documentation
+
+L<http://annocpan.org/dist/Template-Mustache>
+
+=item * CPAN Ratings
+
+L<http://cpanratings.perl.org/d/Template-Mustache>
+
+=item * Search CPAN
+
+L<http://search.cpan.org/dist/Template-Mustache/>
+
+=back
+
+=head1 ACKNOWLEDGEMENTS
+
+
+=head1 COPYRIGHT & LICENSE
+
+Copyright 2010 Chas. J. Owens IV.
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of either: the GNU General Public License as published
+by the Free Software Foundation; or the Artistic License.
+
+See http://dev.perl.org/licenses/ for more information.
+
+=cut
+
+"I don't know how to play the bass.";
