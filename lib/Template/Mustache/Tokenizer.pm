@@ -128,7 +128,6 @@ sub next {
 	}
 
 	my $token = $1;
-	my $type  = $self->type($token);
 	my ($s, $e) = map { quotemeta } @{$self}{qw/ _start _end /}; 
 
 	if ($token =~ /\A$s(.+?)= =(.+?)$e\z/) {
@@ -141,16 +140,29 @@ sub next {
 		$self->_gen_rules;
 		if ($self->{_debug}) {
 			warn "start is now $self->{_start} (was $s)\n",
-			"end   is now $self->{_end}   (was $e)\n";
+			     "end   is now $self->{_end}   (was $e)\n";
 		}
 		return $self->next;
 	}
 
-	if (wantarray) {
-		return $token, $type if defined $token;
-	} else {
-		return $token if defined $token;
-	}
+
+	#in void/scalar context just return the token
+	return $token unless wantarray;
+
+	#in list context strip off everything but the name
+	my $unencoded = "$s $e" eq "\\{\\{ \\}\\}" ?
+		qr/\{{3} (.*) }{3}/xs :
+		qr/$s & (.*) $e/xs;
+
+	my $type      = $self->type($token);
+	my ($name)    = 
+		$type =~ /unescape/ ? $token =~ /$unencoded/xs  :
+		$type eq "variable" ? $token =~ /$s (.*) $e/xs  :
+		$type eq "text"     ? $token                    :
+				      $token =~ /$s . (.*) $e/xs;
+
+	return $name, $type if defined $token;
+	return;
 }
 
 =head2 $tokenizer->type(TOKEN)
