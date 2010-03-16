@@ -100,19 +100,52 @@ for my $type (@types) {
 }
 is scalar $t->next, undef, "end of tokens returns undef";
 
+my @names = (
+	"comment",             "\n",         #1,   2
+	"partial",             "\n",         #3,   4
+	"enum start",          "\n",         #5,   6
+	"enum stop",           "\n",         #7,   8
+	"variable",             "\n",         #9,  10
+	"unescaped variable", "\n(text)",   #11, 12
+
+	"{{(= =)}}",                "\n",         #13
+	"comment",               "\n",         #14, 15
+	"partial",               "\n",         #16, 17
+	"enum start",            "\n",         #18, 19
+	"enum stop",             "\n",         #20, 21
+	"variable",               "\n",         #22, 23
+	'unescaped variable',    "\n{{text}}", #24, 25
+
+	"(#= =#)",                  "\n",         #26
+	"comment",               "\n",         #27, 28
+	"partial",               "\n",         #29, 30
+	"enum start",            "\n",         #31, 32
+	"enum stop",             "\n",         #33, 34
+	"variable",               "\n",         #35, 36
+	"unescaped variable",    "\n(text)",   #37, 38
+	
+	"#{{= =}}#",                "\n",         #39, 40
+	"comment",             "\n",         #41, 42
+	"partial",             "\n",         #43, 44
+	"enum start",          "\n",         #45, 46
+	"enum stop",           "\n",         #47, 48
+	"variable",             "\n",         #49, 50
+	"unescaped variable", "\n#text#",   #51, 52
+
+);
 for my $type (@types) {
 	my @a = $t->next;
-	my $token = shift @tokens;
-	push @tokens, $token;
-	if ($token =~ /= =/) {
-		$token = shift @tokens;
-		push @tokens, $token;
+	my $name = shift @names;
+	push @names, $name;
+	if ($name =~ /= =/) {
+		$name = shift @names;
+		push @names, $name;
 	}
 	my $style = $t->start . " " . $t->end;
 
-	(my $display = $token) =~ s/\n/\\n/g;
+	(my $display = $name) =~ s/\n/\\n/g;
 
-	is_deeply \@a, [ $token, $type ], "token $display with style $style";
+	is_deeply \@a, [ $name, $type ], "token $display with style $style";
 }
 {
 	my @a = $t->next;
@@ -136,5 +169,5 @@ for my $test (@type_tests) {
 
 $t = Template::Mustache::Tokenizer->new("{{( = =)}}");
 eval {{ $t->next }};
-is $@, "delimiters cannot contain whitespace at t/tokenizer.t line 138\n",
+is $@, "delimiters cannot contain whitespace at t/tokenizer.t line 171\n",
 	"testing bad set delimiter";
